@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ferretería POS & Admin - MVP</title>
+    <style>
+        body { font-family: Arial, sans-serif; display: flex; gap: 20px; padding: 20px; background-color: #f4f4f4; }
+        .module { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .pos { width: 50%; }
+        .admin { width: 50%; }
+        h2 { border-bottom: 2px solid #ccc; padding-bottom: 10px; margin-bottom: 15px; }
+        input[type="text"], input[type="number"], select, button { padding: 10px; margin-bottom: 10px; width: calc(100% - 22px); box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
+        button { background-color: #007bff; color: white; cursor: pointer; border: none; }
+        button:hover { background-color: #0056b3; }
+        #carritoTable, #productosLista { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        #carritoTable th, #carritoTable td, #productosLista th, #productosLista td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        .total { font-size: 1.5em; font-weight: bold; margin-top: 15px; }
+        .success { color: green; font-weight: bold; }
+        .error { color: red; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <div class="module pos">
+        <h2>Punto de Venta (POS) 🛒</h2>
+        
+        <label for="search">Buscar Producto (Escribe Nombre o SKU):</label>
+        <input type="text" id="search" onkeyup="searchProducts()" placeholder="Ej: Tornillo o HM20C">
+        
+        <div id="productosListaContainer">
+            <p>Resultados de búsqueda:</p>
+            <ul id="productosLista"></ul>
+        </div>
+
+        <h3>Ticket Actual</h3>
+        <table id="carritoTable">
+            <thead>
+                <tr>
+                    <th>Producto</th>
+                    <th>Cant.</th>
+                    <th>Precio Unit.</th>
+                    <th>Subtotal</th>
+                    <th>Acción</th>
+                </tr>
+            </thead>
+            <tbody id="carritoBody">
+                </tbody>
+        </table>
+        
+        <div class="total">TOTAL: <span id="totalVenta">0.00</span></div>
+        
+        <button onclick="registrarVenta()">COBRAR Y REGISTRAR VENTA</button>
+        <p id="posMessage"></p>
+    </div>
+
+    <div class="module admin">
+        <h2>Herramientas de Administración ⚙️</h2>
+
+        <h3>Actualización Masiva de Precios (Anti-Inflación)</h3>
+        <label for="proveedorSelect">Proveedor:</label>
+        <select id="proveedorSelect"></select>
+        
+        <label for="aumentoPorcentaje">Aumento de Costo (%):</label>
+        <input type="number" id="aumentoPorcentaje" placeholder="Ej: 10 (para 10%)">
+        
+        <button onclick="aplicarAumento()">APLICAR AUMENTO MASIVO</button>
+        <p id="adminMessage"></p>
+
+        <hr style="margin-top: 20px;">
+
+        <h3>Categorías Disponibles</h3>
+        <ul id="categoriasLista"></ul>
+        <button onclick="loadCategorias()">Cargar Categorías</button>
+
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000';
+        let carrito = [];
+        let proveedores = [];
+        
+        // --- FUNCIÓN UTILITARIA: CARGAR PROVEEDORES ---
+        async function loadProveedores() {
+            try {
+                const response = await fetch(`${API_URL}/proveedores`);
+                proveedores = await response.json();
+                const select = document.getElementById('proveedorSelect');
+                select.innerHTML = '<option value="">-- Seleccione Proveedor --</option>';
+                proveedores.forEach(p => {
+                    const option = document.createElement('option');
+                    option.value = p.id;
+                    option.textContent = p.nombre_fantasia;
+                    select.appendChild(option);
+                });
+            } catch (error) {
+                console.error('Error cargando proveedores:', error);
+            }
+        }
+        
+        // --- FUNCIÓN POS: BUSCAR PRODUCTOS ---
+        async function searchProducts() {
+            const query = document.getElementById('search').value;
+            const lista = document.getElementById('productosLista');
+            lista.innerHTML = '';
+            if (query.length < 2) return;
+
+            try {
+                const response = await fetch(`${API_URL}/productos/buscar?q=${query}`);
+                const productos = await response.json();
+
+                productos.forEach(p => {
+                    const li = document.createElement('li');
+                    li.innerHTML = `
+                        <strong>${p.nombre}</strong> (${p.sku}) 
+                        - Precio: $${parseFloat(p.precio_venta_final).toFixed(2)} 
+                        - Stock: ${p.stock_actual} ${p.unidad_medida}
+                        <button onclick="addToCart(${p.id}, '${p.nombre}', ${p.precio_venta_final}, '${p.unidad_medida}')" style="width: auto; margin-left: 10px;">+</button>
+                    `;
+                    lista.appendChild(li);
+                });
+            } catch (error) {
+                console.error('Error buscando productos:', error);
+            }
+        }
+
+        // --- FUNCIÓN POS: AÑADIR AL CARRITO ---
+        function addToCart(id, nombre, precio, unidad) {
+            const existingItem = carrito.find(item => item.id_producto === id);
+            
+            if (existingItem) {
+                existingItem.cantidad += 1;
+            } else {
+                carrito.push({
+                    id_producto: id,
+                    nombre: nombre,
+                    precio_unitario: precio,
+                    cantidad: 1,
+                    unidad: unidad
+                });
+            }
+            renderCarrito();
+        }
+
+        // --- FUNCIÓN POS: RENDERIZAR CARRITO ---
+        function renderCarrito() {
+            const body = document.getElementById('carritoBody');
+            const totalVenta = document.getElementById('totalVenta');
+            let total = 0;
+            body.innerHTML = '';
+
+            carrito.forEach(item => {
+                const subtotal = item.cantidad * item.precio_unitario;
+                total += subtotal;
+
+                const row = body.insertRow();
+                row.innerHTML = `
+                    <td>${item.nombre}</td>
+                    <td><input type="number" value="${item.cantidad}" min="0.01" step="${item.unidad === 'unidad' ? 1 : 0.1}" style="width: 60px;" onchange="updateCartQuantity(${item.id_producto}, this.value)"> ${item.unidad}</td>
+                    <td>$${item.precio_unitario.toFixed(2)}</td>
+                    <td>$${subtotal.toFixed(2)}</td>
+                    <td><button onclick="removeFromCart(${item.id_producto})" style="background-color: #dc3545; width: auto;">X</button></td>
+                `;
+            });
+            
+            totalVenta.textContent = total.toFixed(2);
+        }
+
+        // --- FUNCIÓN POS: ACTUALIZAR CANTIDAD / ELIMINAR ---
+        function updateCartQuantity(id, newQuantity) {
+            const cantidad = parseFloat(newQuantity);
+            if (cantidad <= 0) {
+                removeFromCart(id);
+                return;
+            }
+            const item = carrito.find(i => i.id_producto === id);
+            if (item) item.cantidad = cantidad;
+            renderCarrito();
+        }
+
+        function removeFromCart(id) {
+            carrito = carrito.filter(item => item.id_producto !== id);
+            renderCarrito();
+        }
+        
+        // --- FUNCIÓN POS: REGISTRAR VENTA (POST /ventas) ---
+        async function registrarVenta() {
+            const message = document.getElementById('posMessage');
+            message.textContent = '';
+            
+            if (carrito.length === 0) {
+                message.textContent = 'El carrito está vacío.';
+                message.className = 'error';
+                return;
+            }
+
+            const itemsToSell = carrito.map(item => ({
+                id_producto: item.id_producto,
+                cantidad: item.cantidad
+            }));
+
+            try {
+                const response = await fetch(`${API_URL}/ventas`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ items: itemsToSell })
+                });
+
+                const data = await response.json();
+
+                if (response.status === 201) {
+                    message.textContent = `Venta #${data.venta.id} registrada por $${data.venta.total}. Stock actualizado.`;
+                    message.className = 'success';
+                    carrito = []; // Vaciar carrito
+                    renderCarrito();
+                    searchProducts(); // Refrescar stock en la lista
+                } else {
+                    message.textContent = `Error al registrar venta: ${data.error} - Detalles: ${data.details.join(', ')}`;
+                    message.className = 'error';
+                }
+            } catch (error) {
+                message.textContent = 'Error de conexión con el servidor.';
+                message.className = 'error';
+                console.error('Error al registrar venta:', error);
+            }
+        }
+
+        // --- FUNCIÓN ADMIN: APLICAR AUMENTO (PUT /precios/actualizar-proveedor) ---
+        async function aplicarAumento() {
+            const proveedorId = document.getElementById('proveedorSelect').value;
+            const aumento = document.getElementById('aumentoPorcentaje').value;
+            const message = document.getElementById('adminMessage');
+            message.textContent = '';
+
+            if (!proveedorId || !aumento || parseFloat(aumento) === 0) {
+                message.textContent = 'Debe seleccionar un proveedor e ingresar un porcentaje válido.';
+                message.className = 'error';
+                return;
+            }
+
+            if (!confirm(`¿Confirma aplicar un aumento del ${aumento}% a TODOS los costos y precios del proveedor ID ${proveedorId}?`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_URL}/precios/actualizar-proveedor`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        id_proveedor: parseInt(proveedorId), 
+                        porcentaje_aumento: parseFloat(aumento) 
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.status === 200) {
+                    message.textContent = data.message;
+                    message.className = 'success';
+                } else {
+                    message.textContent = `Error: ${data.error}`;
+                    message.className = 'error';
+                }
+            } catch (error) {
+                message.textContent = 'Error de conexión con el servidor.';
+                message.className = 'error';
+                console.error('Error al aplicar aumento:', error);
+            }
+        }
+        
+        // --- FUNCIÓN ADMIN: CARGAR CATEGORÍAS ---
+        async function loadCategorias() {
+            const lista = document.getElementById('categoriasLista');
+            lista.innerHTML = '';
+            try {
+                const response = await fetch(`${API_URL}/categorias`);
+                const categorias = await response.json();
+                categorias.forEach(c => {
+                    const li = document.createElement('li');
+                    li.textContent = `ID ${c.id}: ${c.nombre}`;
+                    lista.appendChild(li);
+                });
+            } catch (error) {
+                lista.innerHTML = '<li class="error">Error cargando categorías. Revise la consola.</li>';
+                console.error('Error cargando categorías:', error);
+            }
+        }
+
+        // Inicialización
+        document.addEventListener('DOMContentLoaded', () => {
+            loadProveedores();
+            renderCarrito();
+        });
+    </script>
+
+</body>
+</html>
